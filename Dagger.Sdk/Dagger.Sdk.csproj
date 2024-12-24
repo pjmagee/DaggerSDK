@@ -1,0 +1,31 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net8.0</TargetFramework>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Nullable>enable</Nullable>
+    </PropertyGroup>
+ 
+    <ItemGroup>
+        <ProjectReference Include="..\Dagger.Sdk.Common\Dagger.Sdk.Common.csproj" />
+        <ProjectReference Include="..\SourceGenerator\Dagger.Sdk.SourceGenerator\Dagger.Sdk.SourceGenerator.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+    </ItemGroup>
+    
+    <ItemGroup>
+        <AdditionalFiles Include="Assets\schema.json" />
+    </ItemGroup>
+
+    <Target Name="RunGraphQLQuery" BeforeTargets="Build">
+
+        <!-- Windows -->
+        <Exec Command="type introspection.graphql | dagger query &gt; $(MSBuildProjectDirectory)/schema.json"
+              Condition="!Exists('schema.json') And Exists('introspection.graphql') And '$(OS)' == 'Windows_NT'" />
+
+        <!-- Linux/Mac -->
+        <Exec Command="dagger query &lt; introspection.graphql &gt; $(MSBuildProjectDirectory)/schema.json"
+              Condition="!Exists('schema.json') And Exists('introspection.graphql') And '$(OS)' != 'Windows_NT'" />
+
+    </Target>
+
+
+</Project>
