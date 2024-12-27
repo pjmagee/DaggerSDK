@@ -1,3 +1,6 @@
+#pragma warning disable RS1038
+#pragma warning disable RS1041
+
 using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
@@ -22,6 +25,10 @@ public class SchemaCodeGenerator : IIncrementalGenerator
     const string EmptyArray = "[]";
     const string EmptyString = "\"\"";
 
+    // InterfaceDeclarationSyntax? _inputObjectInterface;
+    // ClassDeclarationSyntax? _scalarClass;
+    // TypeDeclarationSyntax? _scalarIdConverterClass;
+
     public void Initialize(IncrementalGeneratorInitializationContext context)
     {
         var additionalFiles = context.AdditionalTextsProvider;
@@ -30,18 +37,15 @@ public class SchemaCodeGenerator : IIncrementalGenerator
         context.RegisterSourceOutput(combined, (spc, combinedValues) => GenerateCode(spc, combinedValues.Left, combinedValues.Right));
     }
 
-    Compilation _compilation;
-
     void GenerateCode(SourceProductionContext context, Compilation compilation, ImmutableArray<AdditionalText> files)
     {
-        this._compilation = compilation;
         // We only handle schema.json
         if (files.IsDefaultOrEmpty || files.Length != 1) return;
         if (Path.GetFileName(files[0].Path) != "schema.json") return;
         
         SourceText? schemaAsJson = files[0].GetText();
         SchemaFile schemaFile = JsonSerializer.Deserialize<SchemaFile>(schemaAsJson!.ToString())!;
-        
+                  
         var compilationUnitSyntax = CompilationUnit()
             .WithMembers(CreateDaggerTypes(schemaFile))
             .AddUsings(UsingDirective(IdentifierName(typeof(JsonConverter).Namespace!)), UsingDirective(IdentifierName(nameof(Dagger))))
@@ -71,7 +75,7 @@ public class SchemaCodeGenerator : IIncrementalGenerator
         return List(memberDeclarationSyntaxes);
     }
 
-    MemberDeclarationSyntax? CreateMemberDeclarationSyntax(Dagger.GraphQL.Type type)
+    MemberDeclarationSyntax? CreateMemberDeclarationSyntax(GraphQL.Type type)
     {
         var syntax = type.Kind switch
         {
@@ -111,7 +115,7 @@ public class SchemaCodeGenerator : IIncrementalGenerator
         return enumMemberDeclarationSyntax.WithLeadingTrivia(CreateEnumMemberDocumentation(field));
     }
 
-    MemberDeclarationSyntax CreateEnumAsEnumDeclarationSyntax(Dagger.GraphQL.Type type)
+    MemberDeclarationSyntax CreateEnumAsEnumDeclarationSyntax(GraphQL.Type type)
     {
         return EnumDeclaration(type.Name)
             .AddModifiers(Token(SyntaxKind.PublicKeyword))
@@ -120,7 +124,7 @@ public class SchemaCodeGenerator : IIncrementalGenerator
             .WithLeadingTrivia(CreateTypeDocumentation(type));
     }
     
-    AttributeSyntax CreateJsonStringEnumConverterAttribute(Dagger.GraphQL.Type type)
+    AttributeSyntax CreateJsonStringEnumConverterAttribute(GraphQL.Type type)
     {
         return Attribute(IdentifierName(nameof(JsonConverter)))
             .WithArgumentList(
@@ -134,12 +138,14 @@ public class SchemaCodeGenerator : IIncrementalGenerator
             );
     }
     
-    AttributeSyntax CreateScalarIdConverterAttribute(Dagger.GraphQL.Type  type)
+    AttributeSyntax CreateScalarIdConverterAttribute(GraphQL.Type  type)
     {
+        const string identifier = "ScalarIdConverter"; // _scalarIdConverterClass!.Identifier.Text
+        
         return Attribute(IdentifierName(nameof(JsonConverter)))
             .WithArgumentList(
                 AttributeArgumentList(
-                    SingletonSeparatedList(AttributeArgument(TypeOfExpression(GenericName(Identifier("Dagger.ScalarIdConverter"))
+                    SingletonSeparatedList(AttributeArgument(TypeOfExpression(GenericName(Identifier(identifier))
                                 .WithTypeArgumentList(TypeArgumentList(SingletonSeparatedList(ParseTypeName(type.Name))))
                             )
                         )
@@ -148,200 +154,85 @@ public class SchemaCodeGenerator : IIncrementalGenerator
             );
     }
 
-    MemberDeclarationSyntax CreateInputAsStructDeclarationSyntax(Dagger.GraphQL.Type  type)
+    MemberDeclarationSyntax CreateInputAsStructDeclarationSyntax(GraphQL.Type  type)
     {
-        var ctorArgs = ParameterList(SeparatedList<ParameterSyntax>([
-                    Parameter(Identifier("name")).WithType(PredefinedType(Token(SyntaxKind.StringKeyword))),
-                    Token(SyntaxKind.CommaToken),
-                    Parameter(Identifier("value")).WithType(PredefinedType(Token(SyntaxKind.StringKeyword)))
-                ]
-            )
-        );
-
-        SimpleBaseTypeSyntax inputInterface = SimpleBaseType(IdentifierName(nameof(IInputObject)));
+        var parameterList = type.InputFields.Select(CreateInputObjectParameterSyntax).ToArray();
+        
+        const string identifier = "IInputObject";
 
         return StructDeclaration(type.Name)
             .WithModifiers(TokenList(Token(SyntaxKind.PublicKeyword)))
-            .WithParameterList(ctorArgs)
-            .WithBaseList(BaseList(SingletonSeparatedList<BaseTypeSyntax>(inputInterface)))
-            .AddMembers(CreateInputToKeyValuePairMethod());
-    }
-
-    MethodDeclarationSyntax CreateInputToKeyValuePairMethod()
-    {
-        return MethodDeclaration(
-                GenericName(Identifier("List"))
-                    .WithTypeArgumentList(TypeArgumentList(SingletonSeparatedList<TypeSyntax>(GenericName(Identifier("KeyValuePair"))
-                                .WithTypeArgumentList(TypeArgumentList(
-                                        SeparatedList<TypeSyntax>([PredefinedType(Token(SyntaxKind.StringKeyword)), Token(SyntaxKind.CommaToken), IdentifierName("Value")])
-                                    )
-                                )
+            .WithParameterList(ParameterList().AddParameters(parameterList))
+            .WithBaseList(BaseList(SingletonSeparatedList<BaseTypeSyntax>(SimpleBaseType(IdentifierName(identifier)))))
+            .AddMembers(
+                MethodDeclaration(GenericName(Identifier("Dictionary")).AddTypeArgumentListArguments(IdentifierName("string"), IdentifierName(nameof(IFormattedValue))), Identifier("ToDictionary"))
+                    .WithModifiers(TokenList(Token(SyntaxKind.PublicKeyword)))
+                    .WithExpressionBody(
+                        ArrowExpressionClause(
+                            InvocationExpression(
+                                MemberAccessExpression(SyntaxKind.SimpleMemberAccessExpression, ThisExpression(), IdentifierName("AsDictionary"))
                             )
                         )
-                    ),
-                Identifier("ToKeyValuePairs")
+                    ).WithSemicolonToken(Token(SyntaxKind.SemicolonToken))
             )
-            .WithModifiers(TokenList(Token(SyntaxKind.PublicKeyword))).WithBody(
-                Block(
-                    LocalDeclarationStatement(
-                        VariableDeclaration(
-                                GenericName(Identifier("List")).WithTypeArgumentList(
-                                    TypeArgumentList(SingletonSeparatedList<TypeSyntax>(GenericName(Identifier("KeyValuePair"))
-                                            .WithTypeArgumentList(TypeArgumentList(SeparatedList<TypeSyntax>(new SyntaxNodeOrToken[]
-                                                        {
-                                                            PredefinedType(Token(SyntaxKind.StringKeyword)),
-                                                            Token(SyntaxKind.CommaToken),
-                                                            IdentifierName("Value")
-                                                        }
-                                                    )
-                                                )
-                                            )
-                                        )
-                                    )
-                                )
-                            )
-                            .WithVariables(
-                                SingletonSeparatedList(VariableDeclarator(Identifier("kvPairs")).WithInitializer(EqualsValueClause(
-                                            ObjectCreationExpression(GenericName(Identifier("List")).WithTypeArgumentList(TypeArgumentList(
-                                                            SingletonSeparatedList<TypeSyntax>(
-                                                                GenericName(Identifier("KeyValuePair")).WithTypeArgumentList(TypeArgumentList(SeparatedList<TypeSyntax>(
-                                                                            new SyntaxNodeOrToken[]
-                                                                            {
-                                                                                PredefinedType(Token(SyntaxKind.StringKeyword)),
-                                                                                Token(SyntaxKind.CommaToken),
-                                                                                IdentifierName("Value")
-                                                                            }
-                                                                        )
-                                                                    )
-                                                                )
-                                                            )
-                                                        )
-                                                    )
-                                                )
-                                                .WithArgumentList(ArgumentList())
-                                        )
-                                    )
-                                )
-                            )
-                    ),
-                    ExpressionStatement(InvocationExpression(MemberAccessExpression(SyntaxKind.SimpleMemberAccessExpression, IdentifierName("kvPairs"), IdentifierName("Add")))
-                        .WithArgumentList(ArgumentList(SingletonSeparatedList(Argument(ObjectCreationExpression(
-                                            GenericName(Identifier("KeyValuePair")).WithTypeArgumentList(TypeArgumentList(
-                                                    SeparatedList<TypeSyntax>(new SyntaxNodeOrToken[]
-                                                        {
-                                                            PredefinedType(Token(SyntaxKind.StringKeyword)),
-                                                            Token(SyntaxKind.CommaToken),
-                                                            IdentifierName("Value")
-                                                        }
-                                                    )
-                                                )
-                                            )
-                                        )
-                                        .WithArgumentList(ArgumentList(SeparatedList<ArgumentSyntax>(new SyntaxNodeOrToken[]
-                                                    {
-                                                        Argument(LiteralExpression(SyntaxKind.StringLiteralExpression, Literal("name"))),
-                                                        Token(SyntaxKind.CommaToken),
-                                                        Argument(
-                                                            CastExpression(
-                                                                IdentifierName(nameof(Dagger.Value)),
-                                                                ObjectCreationExpression(IdentifierName(nameof(Dagger.StringValue)))
-                                                                    .WithArgumentList(ArgumentList(SingletonSeparatedList(Argument(IdentifierName("name")))))
-                                                            )
-                                                        )
-                                                    }
-                                                )
-                                            )
-                                        )
-                                    )
-                                )
-                            )
-                        )
-                    ),
-                    ExpressionStatement(
-                        InvocationExpression(
-                                MemberAccessExpression(SyntaxKind.SimpleMemberAccessExpression, IdentifierName("kvPairs"), IdentifierName("Add"))
-                            )
-                            .WithArgumentList(
-                                ArgumentList(
-                                    SingletonSeparatedList(
-                                        Argument(
-                                            ObjectCreationExpression(
-                                                    GenericName(Identifier("KeyValuePair")).WithTypeArgumentList(
-                                                        TypeArgumentList(
-                                                            SeparatedList<TypeSyntax>(new SyntaxNodeOrToken[]
-                                                                {
-                                                                    PredefinedType(Token(SyntaxKind.StringKeyword)),
-                                                                    Token(SyntaxKind.CommaToken),
-                                                                    IdentifierName(nameof(Dagger.Value))
-                                                                }
-                                                            )
-                                                        )
-                                                    )
-                                                )
-                                                .WithArgumentList(
-                                                    ArgumentList(
-                                                        SeparatedList<ArgumentSyntax>(
-                                                            new SyntaxNodeOrToken[]
-                                                            {
-                                                                Argument(LiteralExpression(SyntaxKind.StringLiteralExpression, Literal("value"))),
-                                                                Token(SyntaxKind.CommaToken),
-                                                                Argument(
-                                                                    CastExpression(
-                                                                        IdentifierName(nameof(Dagger.Value)),
-                                                                        ObjectCreationExpression(IdentifierName(nameof(Dagger.StringValue)))
-                                                                            .WithArgumentList(
-                                                                                ArgumentList(SingletonSeparatedList(Argument(IdentifierName("value"))))
-                                                                            )
-                                                                    )
-                                                                )
-                                                            }
-                                                        )
-                                                    )
-                                                )
-                                        )
-                                    )
-                                )
-                            )
-                    ),
-                    ReturnStatement(IdentifierName("kvPairs"))
-                )
-            );
-    }
-
-    MemberDeclarationSyntax CreateObjectAsClassDeclarationSyntax(Dagger.GraphQL.Type  type)
-    {
-        GraphQL.Field? interfaceType = type.Fields.FirstOrDefault(f => f.Name == "id");
-        
-        BaseListSyntax baseListSyntax = BaseList().AddTypes(PrimaryConstructorBaseType(IdentifierName("Dagger.Object"),
-                ArgumentList(SeparatedList<ArgumentSyntax>([Argument(IdentifierName(nameof(QueryBuilder))), Token(SyntaxKind.CommaToken), Argument(IdentifierName(nameof(GraphQLClient)))]))
-            )
-        );;
-
-        if (interfaceType is not null)
-        {
-            baseListSyntax = baseListSyntax
-                .AddTypes(SimpleBaseType(GenericName(Identifier("IId"))
-                        .WithTypeArgumentList(TypeArgumentList(SingletonSeparatedList(ParseTypeName(interfaceType.Type.GetTypeName()))))
-                    )
-                );
-        }
-
-        return ClassDeclaration(type.Name)
-            .AddModifiers(Token(SyntaxKind.PublicKeyword))
-            .WithMembers(List(type.Fields.Select(field => CreateFieldAsMemberDeclarationSyntax(type, field))))
-            .WithParameterList(ParameterList(SeparatedList<ParameterSyntax>([
-                            Parameter(Identifier("QueryBuilder")).WithType(IdentifierName("QueryBuilder")),
-                            Token(SyntaxKind.CommaToken),
-                            Parameter(Identifier("GraphQLClient")).WithType(IdentifierName("GraphQLClient"))
-                        ]
-                    )
-                )
-            )
-            .WithBaseList(baseListSyntax)
+            .AddMembers(CreateProperties(type.InputFields))
             .WithLeadingTrivia(CreateTypeDocumentation(type));
     }
 
-    MemberDeclarationSyntax CreateFieldAsMemberDeclarationSyntax(Dagger.GraphQL.Type  type, GraphQL.Field field)
+    MemberDeclarationSyntax[] CreateProperties(InputValue[] typeInputFields)
+    {
+        return typeInputFields.Select(input => CreateProperty(input, withSetFromConstructor: true)).Cast<MemberDeclarationSyntax>().ToArray();
+    }
+
+    PropertyDeclarationSyntax CreateProperty(InputValue arg, bool withSetFromConstructor = false)
+    {
+        var type = arg.Type.GetUnderlyingType();
+        
+        var propertyType = type.IsNullable() ? NullableType(ParseTypeName(type.GetTypeName())) : ParseTypeName(type.GetTypeName());
+        
+        var property =  PropertyDeclaration(propertyType, arg.GetAsPropertyName())
+            .WithModifiers(TokenList(Token(SyntaxKind.PublicKeyword)))
+            .WithAccessorList(AccessorList(SingletonList(AccessorDeclaration(SyntaxKind.GetAccessorDeclaration).WithSemicolonToken(Token(SyntaxKind.SemicolonToken)))))
+            .WithLeadingTrivia(CreateSummaryDocumentation(arg.Description));
+        
+        if (withSetFromConstructor)
+        {
+            property = property
+                .WithInitializer(EqualsValueClause(IdentifierName(arg.GetAsParameterName()))).WithSemicolonToken(Token(SyntaxKind.SemicolonToken));
+        }
+        
+        return property;
+    }
+
+
+    MemberDeclarationSyntax CreateObjectAsClassDeclarationSyntax(GraphQL.Type  type)
+    {
+        var classDeclarationSyntax = ClassDeclaration(type.Name)
+            .AddModifiers(Token(SyntaxKind.PublicKeyword), Token(SyntaxKind.PartialKeyword))
+            .WithMembers(List(type.Fields.Select(field => CreateFieldAsMethodDeclarationSyntax(type, field)).Cast<MemberDeclarationSyntax>()))
+            .WithParameterList(ParameterList(SeparatedList<ParameterSyntax>([
+                            Parameter(Identifier(nameof(QueryBuilder))).WithType(IdentifierName(nameof(QueryBuilder))),
+                            Token(SyntaxKind.CommaToken),
+                            Parameter(Identifier(nameof(GraphQLClient))).WithType(IdentifierName(nameof(GraphQLClient)))
+                        ]
+                    )
+                )
+            );
+        
+        GraphQL.Field? interfaceType = type.Fields.FirstOrDefault(f => f.Name == "id");
+
+        if (interfaceType is not null)
+        {
+            classDeclarationSyntax = classDeclarationSyntax.AddBaseListTypes(SimpleBaseType(GenericName(Identifier("IId"))
+                    .WithTypeArgumentList(TypeArgumentList(SingletonSeparatedList(ParseTypeName(interfaceType.Type.GetTypeName()))))
+                )
+            );
+        }
+        
+        return classDeclarationSyntax.WithLeadingTrivia(CreateTypeDocumentation(type));
+    }
+
+    MethodDeclarationSyntax CreateFieldAsMethodDeclarationSyntax(GraphQL.Type  type, GraphQL.Field field)
     {
         var modifiers = TokenList(Token(SyntaxKind.PublicKeyword));
         var returnType = CreateReturnType(field);
@@ -388,16 +279,16 @@ public class SchemaCodeGenerator : IIncrementalGenerator
         return ParseTypeName(f.Type.GetTypeName());
     }
 
-    MemberDeclarationSyntax CreateScalarAsClassDeclarationSyntax(Dagger.GraphQL.Type type)
+    MemberDeclarationSyntax CreateScalarAsClassDeclarationSyntax(GraphQL.Type type)
     {
         return ClassDeclaration(type.Name)
             .AddModifiers(Token(SyntaxKind.PublicKeyword))
-            .WithBaseList(BaseList().AddTypes(SimpleBaseType(IdentifierName("Dagger.Scalar"))))    
+            .WithBaseList(BaseList().AddTypes(SimpleBaseType(IdentifierName("Scalar"))))    
             .WithAttributeLists(SingletonList(AttributeList(SingletonSeparatedList(CreateScalarIdConverterAttribute(type)))))
             .WithLeadingTrivia(CreateTypeDocumentation(type));
     }
     
-    SyntaxTriviaList CreateTypeDocumentation(Dagger.GraphQL.Type  type)
+    SyntaxTriviaList CreateTypeDocumentation(GraphQL.Type  type)
     {
         return CreateSummaryDocumentation(type.Description);
     }
@@ -455,38 +346,22 @@ public class SchemaCodeGenerator : IIncrementalGenerator
         return TriviaList(comments);
     }
     
-    ParameterSyntax CreateRequiredArgumentAsParameterSyntax(InputValue arg)
+    ParameterSyntax CreateInputObjectParameterSyntax(InputValue arg)
     {
-        ParameterSyntax parameterSyntax = Parameter(Identifier(arg.GetArgumentName()));
+        var type = arg.Type.GetUnderlyingType();
 
-        if (arg.Type.GetType_().IsList())
-        {
-            parameterSyntax = parameterSyntax
-                .WithType(ArrayType(IdentifierName(arg.Type.GetTypeName())).WithRankSpecifiers(SingletonList(ArrayRankSpecifier(SingletonSeparatedList<ExpressionSyntax>(OmittedArraySizeExpression())))));
-            
-        }
-        else
-        {
-            if (arg.DefaultValue != null)
-            {
-                parameterSyntax = parameterSyntax
-                    .WithType(ParseTypeName(arg.Type.GetTypeName()))
-                    .WithDefault(EqualsValueClause(LiteralExpression(SyntaxKind.StringLiteralExpression, Literal(arg.DefaultValue))));
-            }
-            else
-            {
-                parameterSyntax = parameterSyntax.WithType(ParseTypeName(arg.Type.GetTypeName()));
-            }
-        }
-        
-        return parameterSyntax;
-    }
+        ParameterSyntax parameterSyntax = Parameter(Identifier(arg.Name));
 
-    ParameterSyntax CreateOptionalArgumentAsParameterSyntax(InputValue arg)
-    {
-        ParameterSyntax parameterSyntax = Parameter(Identifier(arg.Name)).WithType(NullableType(ParseTypeName(arg.Type.GetTypeName())));
+         if (type.IsNullable())
+         {
+             parameterSyntax = parameterSyntax.WithType(NullableType(ParseTypeName(type.GetTypeName())));
+         }
+         else
+         {
+                parameterSyntax = parameterSyntax.WithType(ParseTypeName(type.GetTypeName()));
+         }
 
-        if (arg.Type.IsList())
+        if (type.IsList())
         {
             if (arg.DefaultValue == EmptyArray)
             {
@@ -501,7 +376,7 @@ public class SchemaCodeGenerator : IIncrementalGenerator
                 throw new NotImplementedException("List with default value not implemented");
             }
         }
-        else if (arg.Type.IsBoolean())
+        else if (type.IsBoolean())
         {
             if (arg.DefaultValue == "true")
             {
@@ -520,7 +395,7 @@ public class SchemaCodeGenerator : IIncrementalGenerator
                 throw new NotImplementedException("Boolean with default value not implemented");
             }
         }
-        else if (arg.Type.IsInt())
+        else if (type.IsInt())
         {
             if (arg.DefaultValue is null)
             {
@@ -532,7 +407,7 @@ public class SchemaCodeGenerator : IIncrementalGenerator
                     .WithDefault(EqualsValueClause(LiteralExpression(SyntaxKind.NumericLiteralExpression, Literal(arg.DefaultValue, int.Parse(arg.GetDefaultValue())))));
             }
         }
-        else if (arg.Type.IsFloat())
+        else if (type.IsFloat())
         {
             if (arg.DefaultValue is null)
             {
@@ -545,7 +420,7 @@ public class SchemaCodeGenerator : IIncrementalGenerator
                     .WithDefault(EqualsValueClause(LiteralExpression(SyntaxKind.NumericLiteralExpression, Literal(arg.DefaultValue, float.Parse(arg.GetDefaultValue())))));
             }
         }
-        else if (arg.Type.IsString())
+        else if (type.IsString())
         {
             if (arg.DefaultValue is null)
             {
@@ -567,7 +442,7 @@ public class SchemaCodeGenerator : IIncrementalGenerator
                 throw new NotImplementedException("String with default value not implemented");
             }
         }
-        else if (arg.Type.IsEnum())
+        else if (type.IsEnum())
         {
             if (arg.DefaultValue == null)
             {
@@ -592,7 +467,7 @@ public class SchemaCodeGenerator : IIncrementalGenerator
                 throw new NotImplementedException("Enum with default value not implemented");
             }
         }
-        else if (arg.Type.IsScalar())
+        else if (type.IsScalar())
         {
             if (arg.DefaultValue == null)
             {
@@ -607,58 +482,184 @@ public class SchemaCodeGenerator : IIncrementalGenerator
         return parameterSyntax;
     }
     
+    ParameterSyntax CreateRequiredArgumentAsParameterSyntax(InputValue arg)
+    {
+        string typeName = arg.GetNormalizedTypeName();
+        ParameterSyntax parameterSyntax = Parameter(Identifier(arg.GetAsParameterName())).WithType(ParseTypeName(typeName));
+
+        if (arg.Type.IsList())
+        {
+            parameterSyntax = parameterSyntax
+                .WithType(
+                    ArrayType(ParseTypeName(typeName))
+                        .WithRankSpecifiers(SingletonList(ArrayRankSpecifier(SingletonSeparatedList<ExpressionSyntax>(OmittedArraySizeExpression())))));
+        }
+        
+        return parameterSyntax;
+    }
+
+    ParameterSyntax CreateNullableArgumentAsParameterSyntax(InputValue arg)
+    {
+        TypeRef type = arg.Type.GetUnderlyingType();
+
+        ParameterSyntax parameterSyntax = Parameter(Identifier(arg.Name));
+        
+        string typeName = arg.GetNormalizedTypeName();
+        
+        if (type.IsList())
+        {
+            parameterSyntax = parameterSyntax
+                .WithType(
+                    NullableType(
+                        ArrayType(IdentifierName(typeName))
+                            .WithRankSpecifiers(SingletonList(ArrayRankSpecifier(SingletonSeparatedList<ExpressionSyntax>(OmittedArraySizeExpression()))))));
+            
+            parameterSyntax = parameterSyntax.WithDefault(EqualsValueClause(LiteralExpression(SyntaxKind.NullLiteralExpression)));
+        }
+        else
+        {
+            parameterSyntax = parameterSyntax.WithType(NullableType(ParseTypeName(typeName)));
+        }
+        
+        if (type.IsBoolean())
+        {
+            if (arg.DefaultValue == "true")
+            {
+                parameterSyntax = parameterSyntax.WithDefault(EqualsValueClause(LiteralExpression(SyntaxKind.TrueLiteralExpression)));
+            }
+            else if (arg.DefaultValue == "false")
+            {
+                parameterSyntax = parameterSyntax.WithDefault(EqualsValueClause(LiteralExpression(SyntaxKind.FalseLiteralExpression)));
+            }
+            else if (string.IsNullOrWhiteSpace(arg.DefaultValue))
+            {
+                parameterSyntax = parameterSyntax.WithDefault(EqualsValueClause(LiteralExpression(SyntaxKind.NullLiteralExpression)));
+            }
+        }
+        else if (type.IsInt())
+        {
+            if (string.IsNullOrWhiteSpace(arg.DefaultValue))
+            {
+                parameterSyntax = parameterSyntax.WithDefault(EqualsValueClause(LiteralExpression(SyntaxKind.NullLiteralExpression)));
+            }
+            else
+            {
+                parameterSyntax = parameterSyntax.WithDefault(EqualsValueClause(LiteralExpression(SyntaxKind.NumericLiteralExpression, Literal(arg.DefaultValue, int.Parse(arg.GetDefaultValue())))));
+            }
+        }
+        else if (type.IsFloat())
+        {
+            if (string.IsNullOrWhiteSpace(arg.DefaultValue))
+            {
+                parameterSyntax = parameterSyntax.WithDefault(EqualsValueClause(LiteralExpression(SyntaxKind.NullLiteralExpression)));
+            }
+            else if (!string.IsNullOrWhiteSpace(arg.DefaultValue))
+            {
+                parameterSyntax = parameterSyntax.WithDefault(EqualsValueClause(LiteralExpression(SyntaxKind.NumericLiteralExpression, Literal(arg.DefaultValue, float.Parse(arg.GetDefaultValue())))));
+            }
+        }
+        else if (type.IsString())
+        {
+            if (string.IsNullOrWhiteSpace(arg.DefaultValue))
+            {
+                parameterSyntax = parameterSyntax.WithDefault(EqualsValueClause(LiteralExpression(SyntaxKind.NullLiteralExpression)));
+            }
+            else if (arg.DefaultValue == EmptyString)
+            {
+                parameterSyntax = parameterSyntax.WithDefault(EqualsValueClause(LiteralExpression(SyntaxKind.StringLiteralExpression, Literal(string.Empty))));
+            }
+            else if (!string.IsNullOrWhiteSpace(arg.DefaultValue))
+            {
+                parameterSyntax = parameterSyntax.WithDefault(EqualsValueClause(LiteralExpression(SyntaxKind.StringLiteralExpression, Literal(arg.GetDefaultValue()))));
+            }
+        }
+        else if (type.IsEnum())
+        {
+            if (string.IsNullOrWhiteSpace(arg.DefaultValue))
+            {
+                parameterSyntax = parameterSyntax.WithDefault(EqualsValueClause(LiteralExpression(SyntaxKind.NullLiteralExpression)));
+            }
+            else if (arg.DefaultValue == EmptyString)
+            {
+                parameterSyntax = parameterSyntax.WithDefault(EqualsValueClause(LiteralExpression(SyntaxKind.NullLiteralExpression)));
+            }
+            else if (!string.IsNullOrWhiteSpace(arg.DefaultValue))
+            {
+                MemberAccessExpressionSyntax enumValue = MemberAccessExpression(SyntaxKind.SimpleMemberAccessExpression, IdentifierName(arg.Type.Name), IdentifierName(arg.GetDefaultValue()));
+                parameterSyntax = parameterSyntax.WithDefault(EqualsValueClause(enumValue));
+            }
+        }
+        else if (type.IsScalar())
+        {
+            if (string.IsNullOrWhiteSpace(arg.DefaultValue))
+            {
+                parameterSyntax = parameterSyntax.WithDefault(EqualsValueClause(LiteralExpression(SyntaxKind.NullLiteralExpression)));
+            }
+            else if (arg.DefaultValue == EmptyString)
+            {
+                parameterSyntax = parameterSyntax.WithDefault(EqualsValueClause(LiteralExpression(SyntaxKind.StringLiteralExpression, Literal(string.Empty))));
+            }
+        }
+            
+        return parameterSyntax;
+    }
+    
     ParameterListSyntax CreateInputValuesAsParameterListSyntax(InputValue[]? args)
     {
-        ParameterListSyntax parameterListSyntax = ParameterList();
-
         if (args == null || args.Length == 0)
         {
-            return parameterListSyntax;
+            return ParameterList();
         }
-
-        return parameterListSyntax
+        
+        return ParameterList()
             .AddParameters(args.RequiredArgs().Select(CreateRequiredArgumentAsParameterSyntax).ToArray())
-            .AddParameters(args.OptionalArgs().Select(CreateOptionalArgumentAsParameterSyntax).ToArray());
+            .AddParameters(args.NullableArgs().Select(CreateNullableArgumentAsParameterSyntax).ToArray());
     }
 
     BlockSyntax? CreateBlockSyntax(GraphQL.Field field)
     {
-        return Block(ThrowStatement(
-                ObjectCreationExpression(
-                    IdentifierName("NotImplementedException")
-                ).WithArgumentList(
-                    ArgumentList(
-                        SingletonSeparatedList(
-                            Argument(
-                                LiteralExpression(
-                                    SyntaxKind.StringLiteralExpression,
-                                    Literal("Not implemented yet")
-                                )
+        var argumentsStatement = LocalDeclarationStatement(
+            VariableDeclaration(IdentifierName(Identifier(TriviaList(), SyntaxKind.VarKeyword, "var", "var", TriviaList())))
+                .WithVariables(SingletonSeparatedList(VariableDeclarator(Identifier("arguments")).WithInitializer(EqualsValueClause(InvocationExpression(MemberAccessExpression(SyntaxKind.SimpleMemberAccessExpression, IdentifierName("ArgumentsBuilder"), IdentifierName("GetArguments"))).WithArgumentList(ArgumentList(GetArgumentList(field.Args)))))))
+        );
+        
+        var queryBuilderStatement = LocalDeclarationStatement(
+            VariableDeclaration(IdentifierName(Identifier(TriviaList(), SyntaxKind.VarKeyword, "var", "var", TriviaList())))
+                .WithVariables(SingletonSeparatedList(VariableDeclarator(Identifier("queryBuilder")).
+                        WithInitializer(EqualsValueClause(InvocationExpression(MemberAccessExpression(SyntaxKind.SimpleMemberAccessExpression, IdentifierName("QueryBuilder"), IdentifierName("Select")))
+                                    .AddArgumentListArguments(Argument(IdentifierName($"\"{field.Name}\"")), Argument(IdentifierName("arguments")))
                             )
                         )
                     )
                 )
-            )
+        );
+
+        var returnStatementSyntax = ReturnStatement();
+
+
+        if (field.Type.IsLeaf() || field.Type.IsList())
+        {
+            returnStatementSyntax = ReturnStatement(
+                InvocationExpression(AwaitExpression(
+                    MemberAccessExpression(SyntaxKind.SimpleMemberAccessExpression, IdentifierName("Executor"), GenericName(Identifier("Execute"))
+                        .WithTypeArgumentList(TypeArgumentList(SingletonSeparatedList<TypeSyntax>(IdentifierName(field.Type.GetTypeName()))))
+                    ))
+                ).AddArgumentListArguments(Argument(IdentifierName("GraphQLClient")), Argument(IdentifierName("queryBuilder")))
+            );
+        }
+        else
+        {
+            returnStatementSyntax = ReturnStatement(ObjectCreationExpression(ParseTypeName(field.Type.GetTypeName())).AddArgumentListArguments(Argument(IdentifierName("queryBuilder")), Argument(IdentifierName("GraphQLClient"))));    
+        }
+
+        return Block(
+            argumentsStatement,
+            queryBuilderStatement,
+            returnStatementSyntax
         );
     }
 
-    StatementSyntax CreateReturnStatement(GraphQL.Field field)
-    {
-        return ReturnStatement();
-    }
+    SeparatedSyntaxList<ArgumentSyntax> GetArgumentList(InputValue[] fieldArgs) => SeparatedList(fieldArgs.Select(CreateArgumentSyntax).ToArray());
 
-    StatementSyntax CreateQueryStatement(GraphQL.Field field)
-    {
-        return EmptyStatement();
-    }
-
-    StatementSyntax CreateArgumentStatement(GraphQL.Field field)
-    {
-        if (field.Args.Length == 0)
-        {
-            return EmptyStatement();
-        }
-
-        return EmptyStatement();
-    }
+    ArgumentSyntax CreateArgumentSyntax(InputValue arg) => Argument(IdentifierName(arg.GetAsParameterName()));
 }

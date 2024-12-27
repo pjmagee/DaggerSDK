@@ -6,7 +6,7 @@ namespace Dagger;
 
 public class GraphQLClient
 {
-    private readonly HttpClient _httpClient;
+    readonly HttpClient _httpClient;
 
     public GraphQLClient() : this(Environment.GetEnvironmentVariable("DAGGER_SESSION_PORT")!, Environment.GetEnvironmentVariable("DAGGER_SESSION_TOKEN")!)
     {
@@ -23,9 +23,9 @@ public class GraphQLClient
 
     private static string GetTokenHeaderValue(string token) => Convert.ToBase64String(Encoding.UTF8.GetBytes($"{token}:"));
     
-    public async Task<HttpResponseMessage> RequestAsync(string query)
+    public async Task<HttpResponseMessage> RequestAsync(string query, CancellationToken cancellationToken = default)
     {
         using StringContent content = new StringContent(JsonSerializer.Serialize(new { query }), Encoding.UTF8, "application/json");
-        return await _httpClient.PostAsync("/query", content);
+        return await _httpClient.PostAsync("/query", content, cancellationToken);
     }
 }

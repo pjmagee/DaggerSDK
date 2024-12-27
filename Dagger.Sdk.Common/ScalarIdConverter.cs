@@ -7,8 +7,11 @@ public class ScalarIdConverter<TScalar> : JsonConverter<TScalar> where TScalar :
 {
     public override TScalar Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
     {
-        var scalar = new TScalar();
-        scalar.Value = reader.GetString()!;
+        var scalar = new TScalar
+        {
+            Value = reader.GetString()!,
+        };
+
         return scalar;
     }
 

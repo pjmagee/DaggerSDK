@@ -3,6 +3,18 @@ using System.Text;
 
 namespace Dagger;
 
+public sealed record Argument(string Key, IFormattedValue FormattedValue)
+{
+    public string Value() => FormattedValue.Value();
+}
+
+public class Field(string name, ImmutableList <Argument> args)
+{
+    public string Name { get; } = name;
+
+    public ImmutableList<Argument> Args { get; } = args;
+}
+
 public class QueryBuilder(ImmutableList<Field> path)
 {
     public readonly ImmutableList<Field> Path = path;
@@ -18,14 +30,14 @@ public class QueryBuilder(ImmutableList<Field> path)
     {
         return Select(name, ImmutableList<Argument>.Empty);
     }
-
+    
     /// <summary>
     /// Select a field with name plus arguments.
     /// </summary>
     /// <param name="name">The field name.</param>
     /// <param name="args">The field arguments.</param>
     /// <returns>A new QueryBuilder instance.</returns>
-    public QueryBuilder Select(string name, ImmutableList<Argument> args)
+    public QueryBuilder Select(string name, ImmutableList <Argument> args)
     {
         return Select(new Field(name, args));
     }
@@ -50,14 +62,7 @@ public class QueryBuilder(ImmutableList<Field> path)
             if (selection.Args.Count > 0)
             {
                 builder.Append('(');
-                builder.Append(
-                    string.Join(
-                        ",",
-                        selection
-                            .Args.Select(async arg => $"{arg.Key}:{await arg.FormatValue()}")
-                            .Select(v => v.Result)
-                    )
-                );
+                builder.Append(string.Join(',', selection.Args.Select(arg => $"{arg.Key}:{arg.Value()}")));
                 builder.Append(')');
             }
         }

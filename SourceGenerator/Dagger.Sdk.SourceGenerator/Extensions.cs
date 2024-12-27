@@ -26,10 +26,17 @@ public static class Extensions
         return isReservedKeyWord ? $"@{f.DefaultValue}" : f.DefaultValue.Trim('"');
     }
 
-    public static string GetArgumentName(this InputValue f)
+    public static string GetAsParameterName(this InputValue f)
+    {
+        string name = f.Name;
+        bool isReservedKeyword = SyntaxFacts.GetKeywordKind(name) != SyntaxKind.None;
+        return isReservedKeyword ? $"@{f.Name}" : f.Name;
+    }
+    
+    public static string GetAsPropertyName(this InputValue f)
     {
         bool isReservedKeyword = SyntaxFacts.GetKeywordKind(f.Name) != SyntaxKind.None;
-        return isReservedKeyword ? $"@{f.Name}" : f.Name;
+        return (isReservedKeyword ? "@{f.Name}" : f.Name).ToPascalCase();
     }
 
     public static string GetMethodName(this Dagger.GraphQL.Type  type, Field f)
@@ -39,7 +46,6 @@ public static class Extensions
         if (f.Type.IsLeaf() || f.Type.IsList())
         {
             return $"{name}Async";
-            ;
         }
 
         if (type.Name.Equals(f.Name, StringComparison.OrdinalIgnoreCase))
@@ -54,11 +60,22 @@ public static class Extensions
     {
         return f.Kind switch
         {
-            Kind.NON_NULL => GetTypeName(f.OfType),
-            Kind.LIST => $"{GetTypeName(f.OfType)}",
+            Kind.NON_NULL => GetTypeName(f.OfType!),
+            Kind.LIST => $"{GetTypeName(f.OfType!)}",
             Kind.SCALAR => f.GetScalarTypeName(),
-            _ => f.Name
+            _ => f.Name.ToPascalCase()
         };
+    }
+
+    public static string GetNormalizedTypeName(this InputValue input)
+    {
+        var tr = input.Type.GetUnderlyingType();
+        var typeName = tr.GetTypeName();
+        if (typeName.EndsWith("ID") && !string.Equals(input.Name, "id"))
+        {
+            typeName = typeName[..^2];
+        }
+        return typeName;
     }
 
     public static bool IsNullable(this TypeRef f)
@@ -94,14 +111,14 @@ public static class Extensions
             "int" => SyntaxFactory.Token(SyntaxKind.IntKeyword).ToFullString(),
             "float" => SyntaxFactory.Token(SyntaxKind.FloatKeyword).ToFullString(),
             "boolean" => SyntaxFactory.Token(SyntaxKind.BoolKeyword).ToFullString(),
-            _ => f.Name
+            _ => f.Name.ToPascalCase()
         };
     }
 
     /// <summary>
     /// Get the optional arguments from a list of arguments.
     /// </summary>
-    public static ImmutableArray<InputValue> OptionalArgs(this InputValue[] args) => [..args.Where(arg => arg.Type.Kind != Kind.NON_NULL)];
+    public static ImmutableArray<InputValue> NullableArgs(this InputValue[] args) => [..args.Where(arg => arg.Type.Kind != Kind.NON_NULL)];
 
     /// <summary>
     /// Get the required arguments from a list of arguments.
@@ -217,7 +234,7 @@ public static class Extensions
         return false;
     }
 
-    public static TypeRef GetType_(this TypeRef t)
+    public static TypeRef GetUnderlyingType(this TypeRef t)
     {
         var tr = t;
 
